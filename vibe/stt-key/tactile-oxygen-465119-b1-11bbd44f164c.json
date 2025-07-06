@@ -1,0 +1,13 @@
+{
+  "type": "service_account",
+  "project_id": "tactile-oxygen-465119-b1",
+  "private_key_id": "11bbd44f164c27705cf42882f2e2dac806bb3f20",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDQvaoRyylUjKN0\n62YgFuC+wD3VAeV+YyP7f8XWLfd/6SwgH/T25vY839PTRV5LqR1O9dZQnoHdEWVv\nDzySDjk+IEVIOl22gY4SNv67BGnnVQ/zejcWRd2VOAvTlAUEfHqf4GU6TuXm9Zwk\nt9AgYYVRA2JxzobDKvNc7d4/gFu4rTV14oRfkBsQy3z6XRcvg/z8q7obd/JnvVPy\nqvwsXwtVYEZEk+Yk0mT27TV2a8FhE/QcZmLPTHGye9kF6y1VHN5Q9bR8z2j3rkoA\nzvXsSVht+tDhWTgpLca5Uv+bMnutd3YPzUK8ZkS3ctzpdCn6izIa14PkeR/lSscQ\ngMHxCReNAgMBAAECggEASlsVZss4yL5kR3TG5y1fF3PBUswfJLtKCP+FyHqNTEoS\nBst7Ziv1kM+mU/7EzSzLnOHjWsprtgTJXhtOVzSr3V5/b3AjC6zwn7ppWNMEqnvZ\nd8CUOOHgQZQ6Wj7C3ss8nxC+3ltWd8QLv+SeRbqXU7lh6upHhOQa1oKBBZvCkHC1\nVCpHIG74itDwzgBgn7/kGCFiuGsFoOTpAx1O3JwPBaHVWfPVUKc394m9OTeIgFox\nS8NZxkw7VhbwFT131cc9ZgIheK3AtF/B65m8C38aeQUASv3JUt773t2tBwg3y7wW\nLcReIFcFA6dY3PemhCfm7ttBldytwT5c4rVSHtIdfQKBgQD9cbFXeorcqj5wRBsY\nL0w8JosB9mTe/3fIgGyl4TKvAtTR3bK2wOB2zwvLUOgrDBMInn4yEMhb5epI6M2F\nfAvheclcTzV7mf0UKlMjw1qWFyoXgI+9JLFKE7eDYZU91M6ILL2zhKchjHR8TDb3\naePOcqV0vGYTQpiCoASxE9nAqwKBgQDS2JAat1tyg1psjhDLxwvyLtZIu6PIK76k\nhm2k+ac/wnFd7I1vbRtR55nzwjhUvviLtzrYhuslqc21kkq5kPFIfepj1kbpKiWv\n9i3Vw+E9C/Ti6srnFGfMB/GoJZlDSTRlJKn+eHGxJcq2DrK0CsbqV+lqesmi9SMV\nZQt9yYU4pwKBgQD0cPhzf+x4gfZwvy9Gty+XADGoNeX6MnlsN3kS0E3bACcVNvdM\nTmDwFiew9BrIkf+1m2/ph8hG4kyB/49hxE+NK7IrRvY1fULbdSr03lD7W+IsAsIf\n0kjwQm4H2FFh7mM4cbaRc0rjD5212KhXHpkqH+c23RKyVtPTgNSlmZi2uwKBgF+V\nSY6y/MPnBEEeDkMzExlRXldOqSr/mcdgIaiefNGMxnP73wpaff4dbk9xBrR0dpxw\nDj9GuqcyWU0s6q9BJADnBDEKXM8rCjbA9Xpo+F0CZJvSMPWc7Ik0OLsvgFFeiGAp\nxN7Vn0Tdiw4Jj73K/O4TuH9K9snnM2ZpjlIR31EVAoGBAOEjLIH4NAgIjEdpCO9V\nPLlrGfOkL18RAZsyggxxzJx43R7Lh/LqvX70t1+byHdE1dVEq95WSEXQVIOcbp11\nOgOlBLKQ1CuX5jY8Y9W7eS0Xu9RtH9n4qJfMOFYviJu3zyERwv57pmj/niZPmk3u\nnvrFc2cTze6bi4R3RSPrO8EC\n-----END PRIVATE KEY-----\n",
+  "client_email": "vibe-stt-service@tactile-oxygen-465119-b1.iam.gserviceaccount.com",
+  "client_id": "104746473225729936137",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/vibe-stt-service%40tactile-oxygen-465119-b1.iam.gserviceaccount.com",
+  "universe_domain": "googleapis.com"
+}
