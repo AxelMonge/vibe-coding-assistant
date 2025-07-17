@@ -1,46 +1,27 @@
-"""
-Vibe Server Test Client
-
-This script serves as a debugging tool to simulate a client (e.g., Vibe Architect) connecting to the Vibe Server.
-It sends a natural language command and awaits a structured JSON response to verify server functionality.
-
-Dependencies:
-- asyncio: For asynchronous I/O operations
-- websockets: For establishing WebSocket connections
-
-Functions:
-- test_natural_language_command: Connects to the server, sends a natural language command, and receives a response
-"""
-
 import asyncio
 import websockets
 
 async def test_natural_language_command():
-    """
-    Connects to the Vibe Server, sends a natural language command, and awaits a structured JSON response.
-
-    Behavior:
-        1. Establishes a WebSocket connection to ws://localhost:8000/ws
-        2. Sends a natural language command as text
-        3. Prints the sent command and received JSON response
-        4. Handles connection errors gracefully
-
-    Exceptions:
-        ConnectionRefusedError: Caught when the server is unreachable
-
-    Example Command:
-        "crea un nuevo archivo de configuración llamado dockerfile"
-    """
     uri = "ws://localhost:8000/ws"
     try:
         async with websockets.connect(uri) as websocket:
             print("INFO:    Inspector conectado al servidor.")
 
-            # Define a natural language command
-            natural_command = "crea un nuevo archivo de configuración llamado dockerfile"
+            # Leer archivo de audio
+            audio_file_path = "test_comando.mp3"
+            try:
+                with open(audio_file_path, "rb") as f:
+                    audio_data = f.read()
+                print(f"INFO:    Archivo de audio '{audio_file_path}' leído correctamente, {len(audio_data)} bytes")
+            except FileNotFoundError:
+                print(f"ERROR:   Archivo '{audio_file_path}' no encontrado")
+                return
+            except Exception as e:
+                print(f"ERROR:   Fallo al leer el archivo de audio: {e}")
+                return
 
-            await websocket.send(natural_command)
-            print(f"INFO:    Enviando comando de lenguaje natural -> '{natural_command}'")
+            await websocket.send(audio_data)
+            print(f"INFO:    Enviando datos de audio desde '{audio_file_path}'")
 
             # Await server response
             response_json = await websocket.recv()
@@ -48,11 +29,8 @@ async def test_natural_language_command():
 
     except ConnectionRefusedError:
         print("ERROR:   La conexión fue rechazada. ¿Está el Vibe Server en funcionamiento?")
+    except Exception as e:
+        print(f"ERROR:   Error en el cliente: {e}")
 
 if __name__ == "__main__":
-    """
-    Main entry point for running the test client.
-
-    Executes the test_natural_language_command coroutine using asyncio.
-    """
     asyncio.run(test_natural_language_command())
