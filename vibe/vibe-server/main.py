@@ -1,96 +1,108 @@
-import asyncio
 import logging
-from enum import Enum, auto
+import time  # Para logs de timing
+from dotenv import load_dotenv
+load_dotenv()
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from services.vad_service import VoiceActivityProcessor
-# Los siguientes servicios se usarán en los próximos pasos, los importamos ahora.
-# from services.stt_service import transcribe_audio
-# from services.gemini_service import translate_command_to_json
+import asyncio
+from enum import Enum, auto
 
-# --- Configuración del Logger ---
-# Se configura un logger raíz para capturar logs de todos los módulos.
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)-15s - %(levelname)-8s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
+from services.vad_service import VoiceActivityProcessor
+from services.stt_service import initialize_stt_service, transcribe_audio
+from services.gemini_service import process_user_intent  # Importamos la nueva función unificada
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)-20s - %(levelname)-8s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# --- Definición de la Máquina de Estados Finitos (FSM) ---
-class VibeState(Enum):
-    """Define los estados operativos discretos del asistente por conexión."""
-    AWAITING_AUDIO = auto()
-    LISTENING_AND_PROCESSING_VAD = auto()
-    TRANSCRIBING = auto()
-    PROCESSING_LLM = auto()
-    EXECUTING_COMMAND = auto()
-    RESPONDING_TTS = auto()
+app = FastAPI(title="Vibe Server", version="4.1.0")  # Versión de Inferencia de un Solo Paso
 
-# --- Inicialización de la Aplicación FastAPI ---
-app = FastAPI(
-    title="Vibe Server",
-    description="El cerebro orquestador de Vibe, basado en una Máquina de Estados Finitos.",
-    version="2.0.0"
-)
+@app.on_event("startup")
+def startup_event():
+    initialize_stt_service()
+
+NORMALIZATION_RULES = {
+    "punto pay": ".py", "punto pie": ".py", "docker file": "dockerfile",
+    "doctor file": "dockerfile", "java script": "javascript", "type script": "typescript",
+    "lista los archivos": "ls", "instala": "npm install", "corre": "npm run"
+}
+
+def normalize_transcript(text: str) -> str:
+    start_time = time.perf_counter()  # Inicio timing
+    normalized_text = text.lower()
+    for error, correction in NORMALIZATION_RULES.items():
+        normalized_text = normalized_text.replace(error, correction)
+    end_time = time.perf_counter()  # Fin timing
+    logger.info(f"Proceso Normalización tomó {(end_time - start_time) * 1000:.2f} ms")
+    return normalized_text
+
+class VibeState(Enum):
+    AWAITING_AUDIO = auto()
+    LISTENING = auto()
+    PROCESSING_INTENT = auto()  # Un único estado de procesamiento
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    """
-    Gestiona el ciclo de vida completo de una conexión de cliente Vibe.
-    Cada cliente conectado opera su propia instancia de la FSM.
-    """
     await websocket.accept()
     client_id = f"{websocket.client.host}:{websocket.client.port}"
-    logger.info(f"Cliente conectado: {client_id}. Creando instancia de FSM.")
+    logger.info(f"Cliente conectado: {client_id}.")
     
-    # Cada conexión tiene su propio procesador de voz y estado.
     vad_processor = VoiceActivityProcessor()
     current_state = VibeState.AWAITING_AUDIO
     
     try:
         while True:
-            # --- Motor de la Máquina de Estados Finitos ---
-
             if current_state == VibeState.AWAITING_AUDIO:
-                # En este estado, el servidor está pasivo, esperando el primer
-                # fragmento de audio para iniciar el proceso de escucha activa.
                 audio_chunk = await websocket.receive_bytes()
                 vad_processor.process_chunk(audio_chunk)
-                current_state = VibeState.LISTENING_AND_PROCESSING_VAD
-                logger.info(f"[{client_id}] Transición: AWAITING_AUDIO -> LISTENING_AND_PROCESSING_VAD")
+                current_state = VibeState.LISTENING
 
-            elif current_state == VibeState.LISTENING_AND_PROCESSING_VAD:
-                # El servidor ahora escucha activamente, pasando cada fragmento
-                # de audio al servicio VAD para determinar el fin del habla.
+            elif current_state == VibeState.LISTENING:
                 audio_chunk = await websocket.receive_bytes()
-                user_finished_speaking = vad_processor.process_chunk(audio_chunk)
-                
-                if user_finished_speaking:
-                    current_state = VibeState.TRANSCRIBING
-                    logger.info(f"[{client_id}] Transición: LISTENING_AND_PROCESSING_VAD -> TRANSCRIBING")
+                vad_start = time.perf_counter()  # Inicio timing VAD
+                if vad_processor.process_chunk(audio_chunk):
+                    vad_end = time.perf_counter()  # Fin timing VAD
+                    logger.info(f"Proceso VAD tomó {(vad_end - vad_start) * 1000:.2f} ms")
+                    stt_start = time.perf_counter()  # Inicio timing STT
+                    raw_transcript = await transcribe_audio(vad_processor.get_audio_buffer())
+                    stt_end = time.perf_counter()  # Fin timing STT
+                    logger.info(f"Proceso STT tomó {(stt_end - stt_start) * 1000:.2f} ms")
+                    if raw_transcript:
+                        websocket.state.raw_transcript = raw_transcript
+                        current_state = VibeState.PROCESSING_INTENT
+                    else:
+                        vad_processor.reset()
+                        current_state = VibeState.AWAITING_AUDIO
             
-            elif current_state == VibeState.TRANSCRIBING:
-                # El VAD ha determinado el fin del habla. Ahora se procesa el audio acumulado.
-                full_audio = vad_processor.get_audio_buffer()
-                duration = len(full_audio) / (16000 * 2) if len(full_audio) > 0 else 0
-                logger.info(f"[{client_id}] Audio completo recibido ({len(full_audio)} bytes, ~{duration:.2f}s).")
+            elif current_state == VibeState.PROCESSING_INTENT:
+                raw_transcript = websocket.state.raw_transcript
+                normalized_transcript = normalize_transcript(raw_transcript)
+                logger.info(f"[{client_id}] Crudo: '{raw_transcript}' -> Normalizado: '{normalized_transcript}'")
                 
-                # --- PUNTO DE PRUEBA FINAL DE ESTA FASE ---
-                # En esta fase, solo confirmamos que el flujo VAD->FSM funciona.
-                # En el siguiente paso, aquí se llamará al servicio STT.
-                logger.info(f"[{client_id}] >>> TEST DE FSM PASADO: Flujo VAD completado. <<<")
-                await websocket.send_text("Vibe ha detectado el final de tu voz. Listo para transcribir.")
-                
-                # Reseteamos el estado para la próxima interacción.
+                intent_start = time.perf_counter()  # Inicio timing Intent
+                intent_data = await process_user_intent(normalized_transcript)
+                intent_end = time.perf_counter()  # Fin timing Intent
+                logger.info(f"Proceso Intent (Gemini) tomó {(intent_end - intent_start) * 1000:.2f} ms")
+
+                if intent_data and "command" in intent_data and "response" in intent_data:
+                    command = intent_data["command"]
+                    response = intent_data["response"]
+
+                    logger.info(f"[{client_id}] >>> RESPUESTA GENERADA: '{response}' <<<")
+                    await websocket.send_text(f"Vibe dice: {response}")
+
+                    if command:
+                        logger.info(f"[{client_id}] >>> EJECUTANDO: {command} <<< (Simulado)")
+                        # Aquí irá el enrutamiento al Connection Manager
+                    
+                else:
+                    logger.error(f"[{client_id}] La respuesta de Gemini fue inválida.")
+                    await websocket.send_text("Error: Hubo un problema de comunicación con la IA.")
+
                 vad_processor.reset()
                 current_state = VibeState.AWAITING_AUDIO
-                logger.info(f"[{client_id}] FSM reseteada. Transición -> AWAITING_AUDIO")
+                logger.info("Ciclo conversacional completado.")
 
     except WebSocketDisconnect:
         logger.info(f"Cliente {client_id} desconectado.")
     except Exception as e:
-        logger.error(f"[{client_id}] Error crítico en la FSM del WebSocket: {e}", exc_info=True)
-    finally:
-        # Asegurarse de que los recursos se limpien si es necesario.
-        logger.info(f"Cerrando la sesión para el cliente {client_id}.")
+        logger.error(f"Error crítico en FSM: {e}", exc_info=True)

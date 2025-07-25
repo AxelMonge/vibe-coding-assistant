@@ -1,159 +1,103 @@
-"""
-Servicio STT: Transcripción con Google Cloud Speech-to-Text V2.
-
-Actualizaciones (2025): Ubicación 'global'; AdaptationPhraseSet en lugar de PhraseSetReference; Manejo de operaciones long-running; Recuperación de recursos existentes; Adaptación aplicada directamente en config para streaming; Corregido interim_results en streaming_features [ref: cloud.google.com/speech-to-text/v2/docs/reference/rpc/google.cloud.speech.v2#streamingrecognitionconfig, GitHub generative-ai notebooks].
-"""
 import os
-import queue
-from google.cloud.speech_v2 import SpeechClient
-from google.cloud.speech_v2.types import cloud_speech as speech  # Alias para types.
-from google.api_core.exceptions import AlreadyExists, NotFound
-from dotenv import load_dotenv
+import logging
+import asyncio
+# --- ACTUALIZACIÓN CIENTÍFICA ---
+# Importamos la versión v1p1beta1 de la librería, que nos da acceso a speechContexts.
+from google.cloud import speech_v1p1beta1 as speech
+from google.api_core.exceptions import GoogleAPICallError
+from google.oauth2 import service_account
 
-load_dotenv()
+logger = logging.getLogger(__name__)
 
-client = None
+# --- Variables de Estado del Módulo ---
+speech_client: speech.SpeechClient | None = None
+PROJECT_ID: str | None = None
 
-PROJECT_ID = os.getenv('GOOGLE_PROJECT_ID', 'tactile-oxygen-465119-b1')
-LOCATION = 'global'  # Requerido para V2; regiones como 'us-central1' causan error 400.
-PHRASE_SET_ID = 'vibe-phrase-set'
-LANGUAGE_CODE = 'es-ES'
-MODEL_NAME = 'latest_short'
-SAMPLE_RATE = 16000
-CHANNELS = 1
-
-PHRASES = [
-    {"value": "crea un archivo", "boost": 20.0},
-    {"value": "nuevo archivo", "boost": 20.0},
-    {"value": "escribe en", "boost": 20.0},
-    {"value": "agrega código", "boost": 20.0},
-    {"value": "reemplaza bloque", "boost": 20.0},
-    {"value": "borra archivo", "boost": 20.0},
-    {"value": "elimina", "boost": 20.0},
-    {"value": "abre terminal", "boost": 20.0},
-    {"value": "ejecuta comando", "boost": 20.0},
-    {"value": "refactoriza", "boost": 20.0},
-    {"value": "debug", "boost": 20.0},
-    {"value": "prueba unitaria", "boost": 20.0},
-    {"value": "commit", "boost": 20.0},
-    {"value": "push", "boost": 20.0},
-    {"value": "pull", "boost": 20.0}
+# --- Vocabulario de Dominio Específico ---
+# Esta lista se convertirá en el "cerebro" de nuestro STT.
+# La poblamos con todos los términos técnicos que Vibe debe entender.
+DOMAIN_VOCABULARY = [
+    # Programación General
+    "python", "javascript", "react", "vue", "angular", "git", "docker", "kubernetes",
+    "async", "await", "useState", "useEffect", "API", "JSON", "HTML", "CSS", "SQL",
+    "NoSQL", "función", "variable", "clase", "método", "objeto", "array", "diccionario",
+    "puntero", "terminal", "consola", "servidor", "commit", "push", "pull", "branch",
+    "merge", "rebase", "VS Code", "Visual Studio", "FastAPI", "websocket",
+    
+    # Electrónica
+    "ESP32", "GPIO", "PWM", "ADC", "I2C", "SPI", "resistor", "capacitor", "ohm",
+    "farad", "voltaje", "corriente", "Arduino", "PlatformIO", "sketch", "circuito",
+    
+    # Fitness (basado en tu pregunta sobre "hipertrofia")
+    "hipertrofia", "VO2 max", "variabilidad de la frecuencia cardíaca", "MET",
+    "calorías", "proteína", "carbohidratos", "lípidos", "entrenamiento de fuerza",
+    
+    # Fonética y Comandos
+    "punto py", "punto js", "punto ts", "punto html", "punto css"
 ]
 
-def initialize_service():
-    """
-    Inicializa STT V2: Crea o recupera PhraseSet (con boosts por frase). No crea recognizer custom; usa default '_' con adaptación en config.
-    """
-    global client
+def initialize_stt_service():
+    """Inicializa el cliente STT v1p1beta1."""
+    global speech_client, PROJECT_ID
     try:
-        client = SpeechClient()
-
-        parent = f"projects/{PROJECT_ID}/locations/{LOCATION}"
-        phrase_set_path = f"{parent}/phraseSets/{PHRASE_SET_ID}"
-
-        # Crear o recuperar PhraseSet.
-        try:
-            phrase_set_obj = speech.PhraseSet(
-                display_name="Vibe Commands Phrase Set",
-                phrases=[speech.PhraseSet.Phrase(**phrase) for phrase in PHRASES]  # Boosts por frase.
-            )
-            create_phrase_set_request = speech.CreatePhraseSetRequest(
-                parent=parent,
-                phrase_set_id=PHRASE_SET_ID,
-                phrase_set=phrase_set_obj
-            )
-            operation = client.create_phrase_set(request=create_phrase_set_request)
-            operation.result()  # Espera operación long-running.
-            print("INFO: Nuevo PhraseSet creado.")
-        except AlreadyExists:
-            # Recupera existente para confirmar path.
-            phrase_set_obj = client.get_phrase_set(name=phrase_set_path)
-            print("INFO: PhraseSet ya existe; recuperado.")
-        except NotFound:
-            print("WARNING: PhraseSet no encontrado después de intento de creación.")
-            return False, None
-
-        # No crea recognizer; usa default con adaptación en config por request.
-        print("INFO: STT V2 inicializado (usando recognizer default con adaptación).")
-        return True, phrase_set_path  # Retorna True y path para usar en transcripción.
-
+        credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+        if not credentials_path or not os.path.exists(credentials_path):
+            logger.fatal("La variable de entorno GOOGLE_APPLICATION_CREDENTIALS no es válida.")
+            return
+        credentials = service_account.Credentials.from_service_account_file(credentials_path)
+        PROJECT_ID = credentials.project_id
+        logger.info(f"Inicializando SpeechClient (v1p1beta1) para el proyecto: {PROJECT_ID}")
+        speech_client = speech.SpeechClient(credentials=credentials)
     except Exception as e:
-        print(f"FATAL: Error inicialización STT: {e}")
-        return False, None
+        logger.fatal(f"Fallo crítico al inicializar SpeechClient: {e}", exc_info=True)
 
-def transcribe_streaming(audio_queue: queue.Queue) -> str | None:
+async def transcribe_audio(audio_bytes: bytes) -> str | None:
     """
-    Transcribe raw PCM en streaming con V2, aplicando adaptación directamente.
+    Transcribe audio usando el modelo command_and_search y adaptación con speechContexts.
     """
-    if not client:
-        print("ERROR: STT no inicializado.")
+    if not speech_client or not PROJECT_ID:
+        logger.error("El servicio STT no está inicializado. Abortando.")
+        return None
+    if not audio_bytes:
         return None
 
-    success, phrase_set_path = initialize_service()  # Asegura inicialización si no hecha.
-    if not success:
-        return None
+    # --- LA IMPLEMENTACIÓN CIENTÍFICA ---
+    # 1. Crear el contexto de habla con nuestro vocabulario y un alto boost.
+    #    Esto le dice al modelo que estas frases son extremadamente probables.
+    speech_contexts = [speech.SpeechContext(
+        phrases=DOMAIN_VOCABULARY,
+        boost=15.0  # Un valor de boost alto para priorizar nuestro vocabulario.
+    )]
+
+    # 2. Configurar el reconocimiento.
+    config = speech.RecognitionConfig(
+        encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
+        sample_rate_hertz=16000,
+        language_code="es-ES",
+        # Usamos el modelo optimizado para comandos, como sugiere la investigación.
+        model="command_and_search",
+        # Habilitamos el modelo mejorado para mayor precisión.
+        use_enhanced=True,
+        # Adjuntamos nuestro contexto de habla.
+        speech_contexts=speech_contexts,
+    )
+
+    audio = speech.RecognitionAudio(content=audio_bytes)
 
     try:
-        recognizer_path = f"projects/{PROJECT_ID}/locations/{LOCATION}/recognizers/_"  # Default recognizer.
-
-        explicit_decoding = speech.ExplicitDecodingConfig(
-            encoding=speech.ExplicitDecodingConfig.AudioEncoding.LINEAR16,
-            sample_rate_hertz=SAMPLE_RATE,
-            audio_channel_count=CHANNELS
-        )
-
-        adaptation = speech.SpeechAdaptation(
-            phrase_sets=[
-                speech.SpeechAdaptation.AdaptationPhraseSet(phrase_set=phrase_set_path)
-            ]
-        )
-
-        config = speech.RecognitionConfig(
-            explicit_decoding_config=explicit_decoding,
-            language_codes=[LANGUAGE_CODE],
-            model=MODEL_NAME,
-            adaptation=adaptation,
-            features=speech.RecognitionFeatures(enable_automatic_punctuation=True)
-        )
-        
-        streaming_features = speech.StreamingRecognitionFeatures(interim_results=True)
-        
-        streaming_config = speech.StreamingRecognitionConfig(
-            config=config,
-            streaming_features=streaming_features
-        )
-
-        def request_generator():
-            yield speech.StreamingRecognizeRequest(
-                recognizer=recognizer_path,
-                streaming_config=streaming_config
-            )
-            while True:
-                chunk = audio_queue.get()
-                if chunk is None:
-                    return
-                yield speech.StreamingRecognizeRequest(audio=chunk)
-
-        responses = client.streaming_recognize(requests=request_generator())
-
-        transcript = ""
-        for response in responses:
-            if not response.results:
-                continue
-            result = response.results[0]
-            if not result.alternatives:
-                continue
-            transcript = result.alternatives[0].transcript
-            if result.is_final:
-                print(f"Transcript final: {transcript}")
-                return transcript
-
-        print("WARNING: Sin texto reconocido.")
+        logger.info(f"Enviando solicitud de transcripción con speechContexts (modelo command_and_search)...")
+        # La llamada a recognize en v1p1beta1 también es síncrona.
+        response = await asyncio.to_thread(speech_client.recognize, config=config, audio=audio)
+    except GoogleAPICallError as e:
+        logger.error(f"Error en la llamada a la API de Google Speech: {e}", exc_info=True)
         return None
 
-    except Exception as e:
-        print(f"ERROR: Fallo transcripción: {e}")
+    if not response or not response.results:
+        logger.warning("La respuesta de la API de STT no contiene resultados.")
         return None
 
-# Inicializa automáticamente al importar.
-initialize_service()
+    # La estructura de la respuesta es ligeramente diferente en v1.
+    most_likely_transcript = response.results[0].alternatives[0].transcript
+    logger.info(f"Texto transcrito (con adaptación v1) recibido: '{most_likely_transcript}'")
+    
+    return most_likely_transcript

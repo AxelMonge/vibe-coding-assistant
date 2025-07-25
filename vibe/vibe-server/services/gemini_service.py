@@ -1,128 +1,89 @@
-"""
-Gemini Service: Handles interaction with Google Gemini API for command translation.
-
-This module is responsible for converting natural language commands into structured JSON
-format for controlling a code editor, adhering to the Single Responsibility Principle (SRP).
-
-Dependencies:
-- os: For accessing environment variables
-- json: For parsing JSON responses
-- google.generativeai: For interacting with the Gemini API
-- dotenv: For loading environment variables from .env file
-
-Global Variables:
-- PROMPT_INSTRUCTIONS: String containing instructions for the Gemini model
-- model: Configured Gemini model instance
-"""
-
 import os
 import json
+import logging
+import time  # Para logs de timing
 import google.generativeai as genai
-from dotenv import load_dotenv
 
-# Load environment variables (API key) from .env file
-load_dotenv()
+logger = logging.getLogger(__name__)
 
-def configure_ai():
-    """
-    Configures and returns the Gemini AI model.
+try:
+    api_key = os.getenv("GOOGLE_API_KEY")
+    if not api_key:
+        logger.warning("La variable de entorno GOOGLE_API_KEY no está definida.")
+        genai_model = None
+    else:
+        genai.configure(api_key=api_key)
+        # Listar modelos disponibles para depuración (ejecuta una vez y loggea)
+        try:
+            models = [m.name for m in genai.list_models()]
+            logger.info(f"Modelos disponibles: {models}")
+        except Exception as e:
+            logger.warning(f"No se pudo listar modelos: {e}")
+        
+        # Usa el nombre correcto: 'gemini-2.5-flash' (estable, soportado en v1/v1beta)
+        genai_model = genai.GenerativeModel(
+            'gemini-2.5-flash',  # Corregido: sin '-latest'
+            generation_config=genai.GenerationConfig(
+                temperature=0.2,  # Baja para precisión en JSON/clasificación
+                top_p=0.95,       # Controla diversidad sin exceso
+                max_output_tokens=512  # Límite para respuestas concisas
+            )
+        )
+except Exception as e:
+    logger.error(f"Fallo crítico al configurar Gemini: {e}", exc_info=True)
+    genai_model = None
 
-    Behavior:
-        1. Configures the Gemini API with the provided API key
-        2. Initializes the 'gemini-1.5-pro-latest' model
-        3. Returns the model or None if configuration fails
+UNIFIED_PROMPT = """
+Eres Vibe, un asistente IA como Jarvis: profesional, conciso, seguro y engaging. Analiza el input del usuario para clasificar la intención, extraer comandos si aplica, y generar una respuesta hablada corta/directa basada en contexto. No uses markdown ni explicaciones extras.
+Salida ÚNICA: JSON {"module": str (filesystem/terminal/chitchat), "command": str|null, "response": str (respuesta verbal concisa)}.
 
-    Exceptions:
-        KeyError: Raised if GOOGLE_API_KEY is not found in environment variables
-    """
-    try:
-        genai.configure(api_key=os.environ["GOOGLE_API_KEY"])
-        model = genai.GenerativeModel('gemini-1.5-pro')
-        return model
-    except KeyError:
-        print("ERROR: GOOGLE_API_KEY no encontrada. Asegúrate de que tu archivo .env está configurado.")
-        return None
+REGLAS:
+- Clasifica: filesystem (manipulación archivos), terminal (comandos shell/código), chitchat (conversación general/programación/electrónica/fitness).
+- Extrae command: Exacto y ejecutable (e.g., "git commit" o "create_file main.py"); null para chitchat.
+- Genera response: Basada en simulado "Éxito" para comandos o "Conversación iniciada" para chitchat; sé verbose si es chitchat pero <50 palabras.
+- Prioriza contexto: Input usuario, módulo, acción, resultado. Maneja términos técnicos (e.g., ESP32, git, VO2 max) con precisión.
 
-# Instructions for Gemini to convert natural language to structured JSON
-PROMPT_INSTRUCTIONS = """
-Eres Vibe-Translator, un asistente experto que convierte comandos de lenguaje natural a un formato JSON estricto para controlar un editor de código. Tu única respuesta DEBE ser un objeto JSON válido y nada más. No añadas explicaciones ni texto adicional.
+EJEMPLOS:
+Usuario: "crea un archivo main.py"
+{"module": "filesystem", "command": "create_file main.py", "response": "Hecho. Archivo main.py creado exitosamente."}
 
-El formato JSON debe tener dos claves: "action" y "params".
-Las acciones posibles son: "create_file", "delete_file", "write_to_file", "replace_code_block".
-Los "params" dependen de la acción.
+Usuario: "instala express con npm"
+{"module": "terminal", "command": "npm install express", "response": "Éxito al ejecutar: npm install express."}
 
-Aquí tienes ejemplos:
+Usuario: "explica git rebase"
+{"module": "chitchat", "command": null, "response": "Git rebase integra cambios de una rama a otra reescribiendo historia; úsalo para commits limpios, pero con cuidado en compartidos."}
 
-Usuario: "crea un archivo llamado app.js"
-Tu respuesta:
-{
-  "action": "create_file",
-  "params": {
-    "filename": "app.js",
-    "content": ""
-  }
-}
+Usuario: "qué es PWM en ESP32"
+{"module": "chitchat", "command": null, "response": "PWM (Pulse Width Modulation) en ESP32 controla señales analógicas simuladas via duty cycle para LEDs/motores; usa ledc en PlatformIO."}
 
-Usuario: "haz una nueva hoja de estilos que se llame styles.css"
-Tu respuesta:
-{
-  "action": "create_file",
-  "params": {
-    "filename": "styles.css",
-    "content": ""
-  }
-}
+Usuario: "calcula VO2 max para running"
+{"module": "chitchat", "command": null, "response": "VO2 max estima capacidad aeróbica; fórmula aproximada: (distancia en km / tiempo en min) * factor. Consulta app fitness para precisión."}
 
-Usuario: "en el archivo config.py, escribe port = 5000"
-Tu respuesta:
-{
-  "action": "write_to_file",
-  "params": {
-    "filename": "config.py",
-    "content": "port = 5000"
-  }
-}
+Usuario: "hola, cuéntame un chiste"
+{"module": "chitchat", "command": null, "response": "¡Hola! ¿Por qué los programadores odian la naturaleza? Porque tiene demasiados bugs. ¿Listo para codificar?"}
 """
 
-# Configure the model once when the module is loaded
-model = configure_ai()
-
-async def translate_command_to_json(user_command: str) -> dict | None:
+async def process_user_intent(user_command: str) -> dict | None:
     """
-    Sends user command to Gemini and returns the JSON response as a Python dictionary.
-
-    Args:
-        user_command (str): The natural language command from the user
-
-    Behavior:
-        1. Combines prompt instructions with the user command
-        2. Sends the prompt to the Gemini model
-        3. Parses the response into a Python dictionary
-        4. Returns None if any error occurs during processing
-
-    Returns:
-        dict: Parsed JSON response from Gemini, or None if an error occurs
-
-    Exceptions:
-        Exception: Caught for any errors during Gemini interaction or JSON parsing
+    Procesa la intención con un solo prompt unificado.
+    Retorna: {"command": str or None, "response": str} (extrae module internamente si necesitas).
     """
-    if not model:
-        return None
-
-    # Combine instructions with the user command
-    full_prompt = f"{PROMPT_INSTRUCTIONS}\nUsuario: \"{user_command}\"\nTu respuesta:"
-
+    if not genai_model: return None
+    full_prompt = f"{UNIFIED_PROMPT}\nUsuario: \"{user_command}\"\n"
     try:
-        response = await model.generate_content_async(full_prompt)
-        json_response_text = response.text.strip()
-
-        # Clean up JSON if wrapped in markdown code blocks
-        if json_response_text.startswith("```json"):
-            json_response_text = json_response_text[7:-3].strip()
-
-        # Parse JSON text to Python dictionary
-        return json.loads(json_response_text)
+        start_time = time.perf_counter()  # Inicio timing
+        logger.info(f"Enviando a Gemini (Prompt Unificado): '{user_command}'")
+        response = await genai_model.generate_content_async(full_prompt, stream=True)
+        response_text = ""
+        async for chunk in response:
+            response_text += chunk.text
+        response_text = response_text.strip().replace("```json", "").replace("```", "").strip()
+        logger.info(f"Respuesta JSON Unificada de Gemini: {response_text}")
+        data = json.loads(response_text)
+        end_time = time.perf_counter()  # Fin timing
+        logger.info(f"Proceso Gemini tomó {(end_time - start_time) * 1000:.2f} ms")
+        # Retorna subset compatible con main.py
+        return {"command": data.get("command"), "response": data.get("response")}
     except Exception as e:
-        print(f"ERROR: Fallo al interactuar con Gemini o parsear su respuesta: {e}")
-        print(f"Respuesta cruda recibida: {response.text if 'response' in locals() else 'N/A'}")
+        logger.error(f"Error en Prompt Unificado de Gemini: {e}", exc_info=True)
         return None

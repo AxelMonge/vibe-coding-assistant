@@ -12,6 +12,9 @@ google-cloud-speech
 google-generativeai
 google-api-core
 
+# --- Mejor STT ---
+deepgram-sdk~=4.0
+
 # --- Procesamiento de Audio y Voz ---
 webrtcvad-wheels # Para Detección de Actividad de Voz (VAD)
 
