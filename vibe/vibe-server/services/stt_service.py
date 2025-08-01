@@ -24,6 +24,9 @@ DOMAIN_VOCABULARY = [
     "puntero", "terminal", "consola", "servidor", "commit", "push", "pull", "branch",
     "merge", "rebase", "VS Code", "Visual Studio", "FastAPI", "websocket",
     
+    # --- NUEVOS TÉRMINOS DE IA ---
+    "Gemini", "ChatGPT", "Grok", "agente de IA", "agentes de IA", "LLM", "modelo de lenguaje", "Siri", "Alexa", "Langchain", "n8n",
+
     # Electrónica
     "ESP32", "GPIO", "PWM", "ADC", "I2C", "SPI", "resistor", "capacitor", "ohm",
     "farad", "voltaje", "corriente", "Arduino", "PlatformIO", "sketch", "circuito",
