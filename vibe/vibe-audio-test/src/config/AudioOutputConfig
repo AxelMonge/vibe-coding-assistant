@@ -1,0 +1,18 @@
+#ifndef AUDIO_OUTPUT_CONFIG_H
+#define AUDIO_OUTPUT_CONFIG_H
+
+// Nombre del dispositivo Bluetooth (altavoz) al que nos conectaremos.
+// Debe coincidir exactamente con el nombre que anuncia el altavoz XH-A158.
+#define BT_SPEAKER_NAME "XH-A158"
+
+// Tamaño del búfer de anillo de FreeRTOS en bytes. 16KB proporciona un buen
+// equilibrio entre la absorción de jitter de red y la latencia.
+#define AUDIO_BUFFER_SIZE (16 * 1024)
+
+// Parámetros del formato de audio. Deben coincidir con la salida del servidor.
+// La biblioteca A2DP normalmente negocia 44.1kHz, pero es bueno tenerlos definidos.
+#define AUDIO_SAMPLE_RATE 44100
+#define AUDIO_CHANNELS 2
+#define AUDIO_BITS_PER_SAMPLE 16
+
+#endif // AUDIO_OUTPUT_CONFIG_H
