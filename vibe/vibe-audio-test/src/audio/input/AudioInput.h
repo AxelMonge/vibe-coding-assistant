@@ -8,11 +8,11 @@ public:
     AudioInput();
     ~AudioInput();
     void init();
-    void captureChunk();
-    const int16_t* getBuffer() const;
+    // La función de captura ahora vuelve a ser síncrona.
+    void captureChunk(int16_t* buffer);
 
 private:
-    int16_t* audio_chunk_buffer;
+    // No necesitamos miembros privados en esta versión simple.
 };
 
 #endif // AUDIO_INPUT_H
