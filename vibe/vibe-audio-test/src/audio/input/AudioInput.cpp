@@ -1,58 +1,48 @@
 #include "AudioInput.h"
 #include <Arduino.h>
+#include "../../config/HardwareConfig.h" // Usamos nuestro nuevo archivo de config
 
-/*
- * NOTA: La implementación original de los métodos para la clase AudioInput
- * no estaba presente en el archivo `AudioInput.cpp` que proporcionaste.
- * En su lugar, el archivo contenía código duplicado de otra clase.
- *
- * A continuación se presentan implementaciones vacías ("stubs") para que
- * el proyecto pueda compilar. La lógica para la captura de audio (que está
- * comentada en tu `main.cpp` [cite: 32, 33]) debería añadirse aquí si se
- * requiere en el futuro.
- */
+AudioInput::AudioInput() : audio_chunk_buffer(nullptr) {}
 
-/**
- * @brief Constructor de la clase AudioInput.
- */
-AudioInput::AudioInput() : audio_chunk_buffer(nullptr) {
-    // Este constructor se llama al crear el objeto global 'audioInput'.
-    // Aquí se podría inicializar cualquier variable.
-}
-
-/**
- * @brief Destructor de la clase AudioInput.
- */
 AudioInput::~AudioInput() {
-    // Libera la memoria que se haya reservado para el búfer.
     if (audio_chunk_buffer != nullptr) {
-        free(audio_chunk_buffer);
+        delete[] audio_chunk_buffer;
     }
 }
 
-/**
- * @brief Inicializa los componentes necesarios para la entrada de audio.
- */
 void AudioInput::init() {
-    // Esta función es llamada en el setup()[cite: 22].
-    // Aquí iría el código para configurar el micrófono (ej. I2S).
-    // Como la captura de audio no se está usando activamente en el loop,
-    // se deja vacía por ahora.
-    Serial.println("AudioInput: init() llamado (implementación vacía).");
+    // Asignar memoria para el buffer de audio usando las constantes del config.
+    audio_chunk_buffer = new int16_t[SAMPLES_PER_CHUNK];
+    if (!audio_chunk_buffer) {
+        Serial.println("FATAL: Fallo al asignar memoria para el buffer de audio. Reiniciando...");
+        ESP.restart();
+    }
+
+    // Configurar el conversor Analógico-Digital (ADC)
+    adc1_config_width(ADC_WIDTH_BIT_12);
+    adc1_config_channel_atten(ADC_CHANNEL, ADC_ATTEN_DB_11);
+    Serial.println("Vibe Node: Módulo de entrada de audio (ADC) inicializado.");
 }
 
-/**
- * @brief Captura un fragmento de audio desde el micrófono.
- */
 void AudioInput::captureChunk() {
-    // Aquí iría la lógica para leer datos del micrófono y guardarlos
-    // en la variable 'audio_chunk_buffer'.
+    if (!audio_chunk_buffer) return;
+
+    // Calcula el intervalo de tiempo necesario entre cada muestra para lograr la frecuencia de muestreo deseada.
+    long sample_interval_us = 1000000L / CAPTURE_SAMPLE_RATE;
+    long start_time = micros();
+
+    for (int i = 0; i < SAMPLES_PER_CHUNK; ++i) {
+        // Espera activa hasta que sea el momento de tomar la siguiente muestra.
+        while (micros() < start_time + (i * sample_interval_us)) {
+            // yield() cede tiempo a otras tareas del sistema operativo para evitar bloqueos.
+            yield(); 
+        }
+        // Lee el valor del pin del micrófono y lo almacena.
+        // Se resta 2048 para centrar la señal de audio en 0 (eliminar el offset de DC).
+        audio_chunk_buffer[i] = adc1_get_raw(ADC_CHANNEL) - 2048;
+    }
 }
 
-/**
- * @brief Devuelve un puntero al búfer con el audio capturado.
- * @return Un puntero constante al búfer de audio.
- */
-const uint16_t* AudioInput::getBuffer() const {
+const int16_t* AudioInput::getBuffer() const {
     return audio_chunk_buffer;
 }

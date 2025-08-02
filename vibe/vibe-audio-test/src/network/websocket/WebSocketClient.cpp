@@ -60,7 +60,7 @@ void WebSocketClient::start() {
     esp_websocket_client_start(client);
 }
 
-void WebSocketClient::sendAudioChunk(const uint16_t* buffer, size_t length) {
+void WebSocketClient::sendAudioChunk(const int16_t* buffer, size_t length) {
     if (is_connected && client) {
         esp_websocket_client_send_bin(client, (const char *)buffer, length, portMAX_DELAY);
     }

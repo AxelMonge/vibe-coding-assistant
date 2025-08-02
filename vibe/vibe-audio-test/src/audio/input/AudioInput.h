@@ -9,10 +9,10 @@ public:
     ~AudioInput();
     void init();
     void captureChunk();
-    const uint16_t* getBuffer() const;
+    const int16_t* getBuffer() const;
 
 private:
-    uint16_t* audio_chunk_buffer;
+    int16_t* audio_chunk_buffer;
 };
 
 #endif // AUDIO_INPUT_H

@@ -8,7 +8,7 @@ class WebSocketClient {
 public:
     WebSocketClient();
     void start();
-    void sendAudioChunk(const uint16_t* buffer, size_t length);
+    void sendAudioChunk(const int16_t* buffer, size_t length);
     bool isConnected() const;
 
 private:
