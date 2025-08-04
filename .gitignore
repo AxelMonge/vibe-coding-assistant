@@ -976,4 +976,4 @@ FodyWeavers.xsd
 *.keys
 
 # Ignorar credenciales de gc
-vibe-server/config/
+vibe/vibe-server/config/gcp_credentials.json
