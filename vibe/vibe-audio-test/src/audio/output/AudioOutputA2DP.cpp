@@ -1,114 +1,243 @@
-#include "AudioOutputA2DP.h"
-#include <Arduino.h>
+// ============================================================================
+// File:    AudioOutputA2DP.cpp
+// Author:  Vibe / Jarvis Audio Node
+// Purpose: Implementación de salida Bluetooth A2DP (perfil "source") para
+//          reproducir audio en un altavoz/auricular desde ESP32. Extrae PCM
+//          de un ring buffer global y maneja estados de conexión de forma
+//          segura (sin carreras con el stack BT).
+// ============================================================================
 
-// Es necesario inicializar el puntero estático a nullptr.
-// Este puntero permitirá que la función de callback estática acceda a los
-// miembros de la instancia de nuestra clase (como el búfer de audio).
+#include "audio/output/AudioOutputA2DP.h"
+
+#include <Arduino.h>
+#include <cstring>
+#include <algorithm>
+
+#include "config/SystemResources.h" // extern RingbufHandle_t g_audio_buffer
+
+// Instancia global accesible desde callbacks C de la librería
 AudioOutputA2DP* AudioOutputA2DP::instance = nullptr;
 
+// -----------------------------------------------------------------------------
+// Callbacks de estado de conexión/audio (invocados por la librería A2DP)
+// -----------------------------------------------------------------------------
+
 /**
- * @brief Constructor. Se asegura de que la instancia estática apunte a este objeto.
+ * @brief Notificación de cambio de estado de conexión A2DP.
+ *
+ * Importante: este callback corre en el hilo interno de BT (btc_task).
+ * No llamar aquí a end()/start() ni a funciones que destruyan recursos.
+ * Sólo marcar flags y estados para ser atendidos luego en el loop principal.
  */
-AudioOutputA2DP::AudioOutputA2DP() : audio_buffer(nullptr) {
-    instance = this;
+static const char* connStateToStr(esp_a2d_connection_state_t st) {
+    switch (st) {
+        case ESP_A2D_CONNECTION_STATE_DISCONNECTED:   return "DESCONECTADO";
+        case ESP_A2D_CONNECTION_STATE_CONNECTING:     return "CONECTANDO";
+        case ESP_A2D_CONNECTION_STATE_CONNECTED:      return "CONECTADO";
+        case ESP_A2D_CONNECTION_STATE_DISCONNECTING:  return "DESCONECTANDO";
+        default: return "(estado?)";
+    }
+}
+
+void connection_state_changed(esp_a2d_connection_state_t state, void *ptr) {
+    (void)ptr;
+    if (!AudioOutputA2DP::instance) return;
+
+    AudioOutputA2DP::instance->conn_state = state;
+    Serial.printf("[BT] Estado conexión A2DP -> %s (%d)\n", connStateToStr(state), (int)state);
+
+    switch (state) {
+        case ESP_A2D_CONNECTION_STATE_CONNECTED:
+            Serial.println("[BT] Altavoz conectado (stream listo para handshake)");
+            AudioOutputA2DP::instance->setStreamReady(true);
+            break;
+
+        case ESP_A2D_CONNECTION_STATE_DISCONNECTED:
+            Serial.println("[BT] Altavoz desconectado (se limpiará stream_ready)");
+            AudioOutputA2DP::instance->setStreamReady(false);
+            // Señalamos deseo de reinicio; se decidirá en el loop principal
+            AudioOutputA2DP::instance->onDisconnectedCallback();
+            break;
+
+        default:
+            break;
+    }
 }
 
 /**
- * @brief Destructor. Libera los recursos: detiene el A2DP y borra el búfer.
+ * @brief Notificación de cambio de estado de audio (STARTED/SUSPENDED/STOPPED).
+ * Sólo para logging/telemetría.
  */
+void audio_state_changed(esp_a2d_audio_state_t state, void *ptr) {
+    (void)ptr;
+    Serial.printf("[BT] Estado de audio A2DP: %d\n", (int)state);
+}
+
+// -----------------------------------------------------------------------------
+// Ciclo de vida
+// -----------------------------------------------------------------------------
+
+AudioOutputA2DP::AudioOutputA2DP() {}
+
 AudioOutputA2DP::~AudioOutputA2DP() {
-    a2dp_source.end();
-    if (audio_buffer != nullptr) {
-        vRingbufferDelete(audio_buffer);
+    // Cierre limpio si estaba iniciado
+    if (started) {
+        a2dp_source.end();
+        started = false;
+        stream_is_ready = false;
+        conn_state = ESP_A2D_CONNECTION_STATE_DISCONNECTED;
     }
 }
 
 /**
- * @brief Inicializa el sistema de salida de audio.
+ * @brief Inicia el A2DP Source y la conexión al sink.
+ *
+ * Si device_name contiene ':' se interpreta como MAC y se conecta directo,
+ * evitando discovery (recomendado para estabilidad/latencia).
  */
-void AudioOutputA2DP::begin(const char* device_name, size_t buffer_size) {
-    // 1. Crear el Ring Buffer de FreeRTOS para almacenar el audio de forma segura.
-    //    Usamos RINGBUF_TYPE_BYTEBUF porque tratamos con un flujo de bytes sin formato.
-    audio_buffer = xRingbufferCreate(buffer_size, RINGBUF_TYPE_BYTEBUF);
-    if (audio_buffer == nullptr) {
-        Serial.println("FATAL: No se pudo crear el búfer de audio A2DP. Reiniciando...");
-        ESP.restart();
+void AudioOutputA2DP::begin(const char* device_name, size_t buffer_size_bytes) {
+    if (started) {
+        Serial.println("[BT] begin() ignorado: A2DP ya estaba iniciado.");
+        return;
     }
 
-    // 2. Establecer la función de callback. La librería A2DP llamará a esta función
-    //    automáticamente cuando necesite más datos de audio para enviar.
-    a2dp_source.set_data_callback(audio_data_callback);
+    instance = this;
+    app_buffer_size = buffer_size_bytes;
 
-    // 3. Iniciar el servicio A2DP y comenzar a buscar el altavoz.
-    Serial.printf("Vibe Node: Iniciando Bluetooth A2DP para conectar a '%s'...\n", device_name);
+    // Registrar callbacks
+    a2dp_source.set_data_callback(&AudioOutputA2DP::audio_data_callback);
+    a2dp_source.set_on_connection_state_changed(connection_state_changed, this);
+    a2dp_source.set_on_audio_state_changed(audio_state_changed, this);
+
+    // Dejar autoreconectar a la librería (evita que nosotros forcemos end() en caliente)
+    a2dp_source.set_auto_reconnect(true);
+
+    // Iniciar conexión (por nombre o MAC)
     a2dp_source.start(device_name);
 
-    // Opcional: Establecer un volumen por defecto (0-127)
-    a2dp_source.set_volume(80);
+    started = true;
+    conn_state = ESP_A2D_CONNECTION_STATE_DISCONNECTED; // hasta recibir callback
+    Serial.printf("[BT] A2DP Source iniciado hacia '%s'\n", device_name);
 }
 
 /**
- * @brief Función para escribir datos en el búfer (Productor).
- * Esta función será llamada por el WebSocket cuando reciba un chunk de audio.
+ * @brief Ajusta volumen vía AVRCP (0..100 aprox, mapeado por la lib).
  */
-size_t AudioOutputA2DP::write(const uint8_t* data, size_t length) {
-    if (audio_buffer == nullptr) return 0;
-
-    // xRingbufferSend es 'thread-safe', por lo que podemos llamarla de forma segura
-    // desde el hilo del WebSocket sin interferir con el hilo de Bluetooth.
-    // Le damos un pequeño timeout para no bloquear el sistema si el búfer está lleno.
-    BaseType_t result = xRingbufferSend(audio_buffer, data, length, pdMS_TO_TICKS(10));
-
-    if (result != pdTRUE) {
-        // Esto puede ocurrir si el audio llega más rápido de lo que se puede reproducir.
-        // Serial.println("ADVERTENCIA: Búfer de A2DP lleno, paquete descartado.");
-        return 0;
-    }
-
-    return length;
+void AudioOutputA2DP::setVolume(uint8_t volume) {
+    a2dp_source.set_volume(volume);
 }
 
 /**
- * @brief Devuelve si el cliente Bluetooth está conectado a un altavoz.
+ * @brief Consulta si el sink está conectado (consulta directa a la lib).
  */
 bool AudioOutputA2DP::isConnected() {
     return a2dp_source.is_connected();
 }
 
 /**
- * @brief Callback estático de datos de audio (Consumidor).
- * Esta es la función más importante. Es llamada por la librería A2DP en su propio hilo.
+ * @brief Flag de “listo para handshake” con el servidor (cuando ya hay conexión BT).
  */
+void AudioOutputA2DP::setStreamReady(bool ready) {
+    stream_is_ready = ready;
+}
+
+bool AudioOutputA2DP::isStreamReady() const {
+    return stream_is_ready;
+}
+
+/**
+ * @brief Se invoca desde el callback de desconexión. No destruye nada.
+ * Sólo marca intención de reiniciar y limpia flags.
+ */
+void AudioOutputA2DP::onDisconnectedCallback() {
+    stream_is_ready = false;
+    want_restart = true; // el loop decidirá si reintenta (nunca durante CONNECTING)
+}
+
+/**
+ * @brief Reintento seguro: end()+begin() sólo si NO estamos en CONNECTING.
+ * Úsalo desde el loop principal, no desde callbacks.
+ */
+bool AudioOutputA2DP::restartIfSafe(const char* device_name, size_t buffer_size_bytes) {
+    if (conn_state == ESP_A2D_CONNECTION_STATE_CONNECTING) {
+        // Evitamos carreras: no reiniciar a mitad de CONNECTING
+        return false;
+    }
+    if (started) {
+        a2dp_source.end();
+        started = false;
+        stream_is_ready = false;
+        conn_state = ESP_A2D_CONNECTION_STATE_DISCONNECTED;
+        vTaskDelay(pdMS_TO_TICKS(150)); // respiro al controlador BT
+    }
+    want_restart = false;
+    begin(device_name, buffer_size_bytes);
+    return true;
+}
+
+// -----------------------------------------------------------------------------
+// Callback de datos (PCM → A2DP). La librería solicita 'len' bytes.
+// Esta función debe devolver exactamente 'len' (zeros si no hay suficientes).
+// -----------------------------------------------------------------------------
+
 int32_t AudioOutputA2DP::audio_data_callback(uint8_t* data, int32_t len) {
-    if (instance == nullptr || instance->audio_buffer == nullptr) {
-        // Si no hay instancia o búfer, llenar con silencio para evitar ruido.
-        memset(data, 0, len);
-        return len;
-    }
+    // Pequeño "carry" por si recibimos más bytes de los que caben en esta
+    // llamada; lo guardamos para la siguiente invocación.
+    static uint8_t carry_buf[4096];
+    static size_t  carry_len = 0;
 
-    size_t item_size = 0;
-    // Intentar recibir datos del búfer. 'xTicksToWait' se pone en 0 para no bloquear nunca.
-    uint8_t* item = (uint8_t*)xRingbufferReceive(instance->audio_buffer, &item_size, 0);
+    if (len <= 0) return 0;
 
-    if (item != nullptr) {
-        // Datos recibidos con éxito.
-        // Copiar los datos del búfer al búfer de la librería A2DP.
-        memcpy(data, item, item_size);
-        
-        // Devolver el item al búfer para que pueda ser reutilizado.
-        vRingbufferReturnItem(instance->audio_buffer, (void*)item);
+    int32_t produced = 0;
 
-        // Si los datos que teníamos no llenan todo el búfer solicitado,
-        // llenar el resto con silencio para evitar audio "chopeado".
-        if (item_size < len) {
-            memset(data + item_size, 0, len - item_size);
+    // 1) Atender primero restos pendientes en carry_buf
+    if (carry_len > 0) {
+        size_t to_copy = (carry_len < (size_t)len) ? carry_len : (size_t)len;
+        memcpy(data, carry_buf, to_copy);
+        produced += (int32_t)to_copy;
+
+        if (to_copy < carry_len) {
+            // Aún queda "carry" para la próxima
+            memmove(carry_buf, carry_buf + to_copy, carry_len - to_copy);
+            carry_len -= to_copy;
+        } else {
+            carry_len = 0;
         }
-        return len; // Siempre debemos decir que llenamos todo el búfer.
-
-    } else {
-        // No hay datos disponibles en el búfer (underflow).
-        // Es CRÍTICO enviar silencio para evitar chasquidos y pops en el altavoz.
-        memset(data, 0, len);
-        return len;
     }
+
+    // 2) Drenar del ringbuffer global hasta completar 'len' bytes
+    while (produced < len) {
+        size_t item_size = 0;
+        uint8_t* item = (uint8_t*) xRingbufferReceive(g_audio_buffer, &item_size, pdMS_TO_TICKS(1));
+        if (!item || item_size == 0) {
+            break; // sin datos ahora mismo
+        }
+
+        size_t space   = (size_t)(len - produced);
+        size_t to_copy = (item_size < space) ? item_size : space;
+
+        memcpy(data + produced, item, to_copy);
+        produced += (int32_t)to_copy;
+
+        if (item_size > to_copy) {
+            // Sobra parte del item: guardarlo para la próxima llamada
+            size_t remain = item_size - to_copy;
+            size_t spill  = std::min(remain, sizeof(carry_buf));
+            memcpy(carry_buf, item + to_copy, spill);
+            carry_len = spill;
+        }
+
+        // Devolver bloque al ringbuffer
+        vRingbufferReturnItem(g_audio_buffer, (void*)item);
+
+        if (produced >= len) break;
+    }
+
+    // 3) Si no llenamos, completar con silencios para evitar underrun SBC
+    if (produced < len) {
+        memset(data + produced, 0, (size_t)(len - produced));
+        produced = len;
+    }
+
+    return produced;
 }

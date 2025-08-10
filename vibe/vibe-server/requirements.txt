@@ -22,3 +22,7 @@ webrtcvad-wheels # Para Detección de Actividad de Voz (VAD)
 python-dotenv
 
 pydub       
+
+numpy 
+
+soundfile

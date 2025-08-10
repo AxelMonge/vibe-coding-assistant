@@ -20,7 +20,7 @@ void AudioInput::init() {
 
     // Configurar el conversor Analógico-Digital (ADC)
     adc1_config_width(ADC_WIDTH_BIT_12);
-    adc1_config_channel_atten(ADC_CHANNEL, ADC_ATTEN_DB_11);
+    adc1_config_channel_atten(ADC_CHANNEL, ADC_ATTEN_DB_12);
     Serial.println("Vibe Node: Módulo de entrada de audio (ADC) inicializado.");
 }
 

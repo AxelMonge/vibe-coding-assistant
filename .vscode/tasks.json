@@ -1,0 +1,75 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "ESP32: Build",
+      "type": "shell",
+      "command": "pio run",
+      "options": { "cwd": "${workspaceFolder:vibe-coding-assistant}/vibe/vibe-audio-test" },
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": ["$platformio"]
+    },
+    {
+      "label": "ESP32: Upload",
+      "type": "shell",
+      "command": "pio run -t upload",
+      "options": { "cwd": "${workspaceFolder:vibe-coding-assistant}/vibe/vibe-audio-test" },
+      "group": "build",
+      "problemMatcher": ["$platformio"]
+    },
+    {
+      "label": "ESP32: Monitor",
+      "type": "shell",
+      "command": "pio device monitor -b 115200",
+      "options": { "cwd": "${workspaceFolder:vibe-coding-assistant}/vibe/vibe-audio-test" },
+      "isBackground": true
+    },
+    {
+      "label": "Server: Create venv",
+      "type": "shell",
+      "command": "python -m venv .venv",
+      "options": { "cwd": "${workspaceFolder:vibe-coding-assistant}/vibe/vibe-server" }
+    },
+    {
+      "label": "Server: Install deps",
+      "type": "shell",
+      "command": "${command:python.interpreterPath} -m pip install -r requirements.txt",
+      "options": { "cwd": "${workspaceFolder:vibe-coding-assistant}/vibe/vibe-server" }
+    },
+    {
+      "label": "Server: Run",
+      "type": "shell",
+      "command": "${command:python.interpreterPath} -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload",
+      "options": {
+        "cwd": "${workspaceFolder:vibe-coding-assistant}/vibe/vibe-server",
+        "env": { "PYTHONUNBUFFERED": "1" }
+      },
+      "isBackground": true
+    },
+    {
+      "label": "Extension: Install",
+      "type": "shell",
+      "command": "npm ci",
+      "options": { "cwd": "${workspaceFolder:vibe-coding-assistant}/vibe/vibe-architect" }
+    },
+    {
+      "label": "Extension: Watch",
+      "type": "npm",
+      "script": "watch",
+      "path": "${workspaceFolder:vibe-coding-assistant}/vibe/vibe-architect",
+      "isBackground": true,
+      "group": "build"
+    },
+    {
+      "label": "Dev: All (server + extension)",
+      "dependsOn": [
+        "Server: Install deps",
+        "Server: Run",
+        "Extension: Install",
+        "Extension: Watch"
+      ],
+      "type": "shell",
+      "command": "echo Dev services started"
+    }
+  ]
+}
