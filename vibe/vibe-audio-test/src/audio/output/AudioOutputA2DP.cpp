@@ -1,114 +1,144 @@
 #include "AudioOutputA2DP.h"
 #include <Arduino.h>
+#include <cstring>  // memset, memcpy, memmove
 
-// Es necesario inicializar el puntero estático a nullptr.
-// Este puntero permitirá que la función de callback estática acceda a los
-// miembros de la instancia de nuestra clase (como el búfer de audio).
+extern "C" {
+  #include "freertos/FreeRTOS.h"
+  #include "freertos/ringbuf.h"
+  #include "esp_bt_defs.h"
+}
+
+// Recurso global de tu proyecto (debe declarar: extern RingbufHandle_t g_audio_buffer;)
+#include "../../config/SystemResources.h"
+
+// Logs de estado BT (opcionales)
+static void on_conn_state(esp_a2d_connection_state_t state, void*) {
+  // 0=Disconnected, 1=Connecting, 2/3=Connected (según lib), 4=Disconnecting
+  Serial.printf("[A2DP] conn_state=%d\n", (int)state);
+}
+static void on_audio_state(esp_a2d_audio_state_t state, void*) {
+  // 0=Stopped, 1=Started, 2=Suspended
+  Serial.printf("[A2DP] audio_state=%d\n", (int)state);
+}
+
 AudioOutputA2DP* AudioOutputA2DP::instance = nullptr;
 
-/**
- * @brief Constructor. Se asegura de que la instancia estática apunte a este objeto.
- */
-AudioOutputA2DP::AudioOutputA2DP() : audio_buffer(nullptr) {
-    instance = this;
+AudioOutputA2DP::AudioOutputA2DP()
+: audio_buffer(nullptr) {
+  instance = this;
 }
 
-/**
- * @brief Destructor. Libera los recursos: detiene el A2DP y borra el búfer.
- */
 AudioOutputA2DP::~AudioOutputA2DP() {
-    a2dp_source.end();
-    if (audio_buffer != nullptr) {
-        vRingbufferDelete(audio_buffer);
-    }
+  this->end(); // evitar colisión con std::end
 }
 
-/**
- * @brief Inicializa el sistema de salida de audio.
- */
-void AudioOutputA2DP::begin(const char* device_name, size_t buffer_size) {
-    // 1. Crear el Ring Buffer de FreeRTOS para almacenar el audio de forma segura.
-    //    Usamos RINGBUF_TYPE_BYTEBUF porque tratamos con un flujo de bytes sin formato.
-    audio_buffer = xRingbufferCreate(buffer_size, RINGBUF_TYPE_BYTEBUF);
-    if (audio_buffer == nullptr) {
-        Serial.println("FATAL: No se pudo crear el búfer de audio A2DP. Reiniciando...");
-        ESP.restart();
-    }
+void AudioOutputA2DP::begin(const char* device_name, size_t buffer_size_bytes) {
+  // Configurar callbacks antes de arrancar BT
+  a2dp_source.set_data_callback(AudioOutputA2DP::audio_data_callback);
+  a2dp_source.set_on_connection_state_changed(on_conn_state);
+  a2dp_source.set_on_audio_state_changed(on_audio_state);
+  a2dp_source.set_auto_reconnect(true);
+  a2dp_source.set_volume(80); // 0..127
+  a2dp_source.set_pin_code("0000", ESP_BT_PIN_TYPE_FIXED);  // prueba "1234" si no enlaza
 
-    // 2. Establecer la función de callback. La librería A2DP llamará a esta función
-    //    automáticamente cuando necesite más datos de audio para enviar.
-    a2dp_source.set_data_callback(audio_data_callback);
+  Serial.printf("[A2DP] start → '%s'\n", device_name);
+  a2dp_source.start(device_name);     // ⬅️ arranca BT cuando aún hay memoria libre
+  delay(150);                         // respiro corto
 
-    // 3. Iniciar el servicio A2DP y comenzar a buscar el altavoz.
-    Serial.printf("Vibe Node: Iniciando Bluetooth A2DP para conectar a '%s'...\n", device_name);
-    a2dp_source.start(device_name);
+  // Ahora sí: crea el ring (más pequeño para probar) y expón global
+  audio_buffer = xRingbufferCreate(buffer_size_bytes, RINGBUF_TYPE_BYTEBUF);
+  if (!audio_buffer) {
+    Serial.println("[A2DP] FATAL: no se pudo crear ring buffer");
+    delay(100);
+    ESP.restart();
+  }
+  g_audio_buffer = audio_buffer;
 
-    // Opcional: Establecer un volumen por defecto (0-127)
-    a2dp_source.set_volume(80);
+  Serial.printf("[A2DP] ring listo (%u bytes)\n", (unsigned)buffer_size_bytes);
 }
 
-/**
- * @brief Función para escribir datos en el búfer (Productor).
- * Esta función será llamada por el WebSocket cuando reciba un chunk de audio.
- */
-size_t AudioOutputA2DP::write(const uint8_t* data, size_t length) {
-    if (audio_buffer == nullptr) return 0;
+void AudioOutputA2DP::end() {
+  // Detener BT
+  a2dp_source.end();
 
-    // xRingbufferSend es 'thread-safe', por lo que podemos llamarla de forma segura
-    // desde el hilo del WebSocket sin interferir con el hilo de Bluetooth.
-    // Le damos un pequeño timeout para no bloquear el sistema si el búfer está lleno.
-    BaseType_t result = xRingbufferSend(audio_buffer, data, length, pdMS_TO_TICKS(10));
+  // Liberar ring local
+  if (audio_buffer) {
+    vRingbufferDelete(audio_buffer);
+    audio_buffer = nullptr;
+  }
 
-    if (result != pdTRUE) {
-        // Esto puede ocurrir si el audio llega más rápido de lo que se puede reproducir.
-        // Serial.println("ADVERTENCIA: Búfer de A2DP lleno, paquete descartado.");
-        return 0;
-    }
-
-    return length;
+  // Limpiar handle global si apuntaba a este ring
+  if (g_audio_buffer) g_audio_buffer = nullptr;
 }
 
-/**
- * @brief Devuelve si el cliente Bluetooth está conectado a un altavoz.
- */
-bool AudioOutputA2DP::isConnected() {
-    return a2dp_source.is_connected();
+size_t AudioOutputA2DP::write(const uint8_t* data, size_t len) {
+  if (!audio_buffer || !data || !len) return 0;
+  // Envío no bloqueante; si está lleno, descarta el frame (caller puede contar drops)
+  BaseType_t ok = xRingbufferSend(audio_buffer, (void*)data, len, 0);
+  return (ok == pdTRUE) ? len : 0;
 }
 
-/**
- * @brief Callback estático de datos de audio (Consumidor).
- * Esta es la función más importante. Es llamada por la librería A2DP en su propio hilo.
- */
-int32_t AudioOutputA2DP::audio_data_callback(uint8_t* data, int32_t len) {
-    if (instance == nullptr || instance->audio_buffer == nullptr) {
-        // Si no hay instancia o búfer, llenar con silencio para evitar ruido.
-        memset(data, 0, len);
-        return len;
-    }
+// -----------------------------------------------------------------------------
+//  B.9–B.12: A2DP CALLBACK
+//  - Drena el ring (alimentado por el WebSocket) y rellena con silencio si falta.
+//  - Usa un pequeño "stash" para manejar sobrantes cuando un item del ring es
+//    más grande que 'len' solicitado por A2DP.
+//  - No bloquea: si no hay datos, produce silencio (evita pops).
+// -----------------------------------------------------------------------------
+int32_t AudioOutputA2DP::audio_data_callback(uint8_t* out, int32_t len) {
+  static uint8_t  stash[8192];
+  static size_t   stash_len = 0;
+  static uint32_t underruns = 0;
 
+  if (!instance || !instance->audio_buffer || !out || len <= 0) {
+    std::memset(out, 0, (size_t)len);
+    return len;
+  }
+
+  size_t filled = 0;
+
+  // 1) Consumir lo que haya en stash primero
+  if (stash_len) {
+    size_t take = (stash_len < (size_t)len) ? stash_len : (size_t)len;
+    std::memcpy(out, stash, take);
+    filled += take;
+    stash_len -= take;
+    if (stash_len) {
+      // compactar remanente
+      std::memmove(stash, stash + take, stash_len);
+    }
+  }
+
+  // 2) Sacar items del ring hasta llenar o vaciar
+  while (filled < (size_t)len) {
     size_t item_size = 0;
-    // Intentar recibir datos del búfer. 'xTicksToWait' se pone en 0 para no bloquear nunca.
-    uint8_t* item = (uint8_t*)xRingbufferReceive(instance->audio_buffer, &item_size, 0);
+    uint8_t* item = (uint8_t*) xRingbufferReceive(instance->audio_buffer, &item_size, 0 /* no bloquear */);
+    if (!item || item_size == 0) break;
 
-    if (item != nullptr) {
-        // Datos recibidos con éxito.
-        // Copiar los datos del búfer al búfer de la librería A2DP.
-        memcpy(data, item, item_size);
-        
-        // Devolver el item al búfer para que pueda ser reutilizado.
-        vRingbufferReturnItem(instance->audio_buffer, (void*)item);
-
-        // Si los datos que teníamos no llenan todo el búfer solicitado,
-        // llenar el resto con silencio para evitar audio "chopeado".
-        if (item_size < len) {
-            memset(data + item_size, 0, len - item_size);
-        }
-        return len; // Siempre debemos decir que llenamos todo el búfer.
-
+    size_t need = (size_t)len - filled;
+    if (item_size <= need) {
+      std::memcpy(out + filled, item, item_size);
+      filled += item_size;
+      vRingbufferReturnItem(instance->audio_buffer, item);
     } else {
-        // No hay datos disponibles en el búfer (underflow).
-        // Es CRÍTICO enviar silencio para evitar chasquidos y pops en el altavoz.
-        memset(data, 0, len);
-        return len;
+      // Cabeza al out, cola al stash
+      std::memcpy(out + filled, item, need);
+      size_t leftover = item_size - need;
+      if (leftover > sizeof(stash)) leftover = sizeof(stash);
+      std::memcpy(stash, item + need, leftover);
+      stash_len = leftover;
+      filled += need;
+      vRingbufferReturnItem(instance->audio_buffer, item);
+      break;
     }
+  }
+
+  // 3) Silencio si faltó data
+  if (filled < (size_t)len) {
+    std::memset(out + filled, 0, (size_t)len - filled);
+    if ((++underruns % 200) == 0) { // log ocasional para no saturar
+      Serial.printf("[A2DP] underruns total=%u\n", underruns);
+    }
+  }
+  return len;
 }

@@ -1,10 +1,7 @@
-#ifndef SYSTEM_RESOURCES_H
-#define SYSTEM_RESOURCES_H
+extern "C" {
+  #include "freertos/FreeRTOS.h"
+  #include "freertos/ringbuf.h"
+}
 
-#include <Arduino.h> // <-- AÑADE ESTA LÍNEA AQUÍ
-#include "freertos/ringbuf.h"
-
-// Handle global para el búfer de audio compartido entre WebSocket (que escribe en él)
-// y AudioOutputA2DP (que lee de él).
-extern RingbufHandle_t g_audio_buffer;
-#endif // SYSTEM_RESOURCES_H
+// Definición (una sola vez en todo el proyecto)
+RingbufHandle_t g_audio_buffer = nullptr;

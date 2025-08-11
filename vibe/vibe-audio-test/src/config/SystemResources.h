@@ -1,11 +1,9 @@
-#ifndef SYSTEM_RESOURCES_H
-#define SYSTEM_RESOURCES_H
+#pragma once
 
-#include "freertos/ringbuf.h"
+extern "C" {
+  #include "freertos/FreeRTOS.h"
+  #include "freertos/ringbuf.h"
+}
 
-// Handle global para el búfer de audio compartido entre WebSocket (que escribe en él)
-// y AudioOutputA2DP (que lee de él).
-// 'extern' le dice al compilador que esta variable existe, pero se definirá en otro archivo (main.cpp).
+// Handle global del ring de salida (WS ↓ → A2DP)
 extern RingbufHandle_t g_audio_buffer;
-
-#endif // SYSTEM_RESOURCES_H

@@ -1,48 +1,38 @@
-#ifndef AUDIO_OUTPUT_A2DP_H
-#define AUDIO_OUTPUT_A2DP_H
-
+#pragma once
 #include <Arduino.h>
-#include "BluetoothA2DPSource.h" // Incluir la librería principal de A2DP
-#include "freertos/ringbuf.h"   // SOLUCIÓN 1: Incluir para RingbufHandle_t
+#include <BluetoothA2DPSource.h>
 
-// SOLUCIÓN 2 y 3: Se eliminaron todas las dependencias de AudioTools (StreamConverter, ResampleStream)
+extern "C" {
+  #include "freertos/FreeRTOS.h"
+  #include "freertos/ringbuf.h"
+}
 
+/**
+ * Clase de salida A2DP para el speaker test.
+ * - Crea un ring buffer propio para PCM (audio_buffer).
+ * - Expone ese ring en g_audio_buffer (definido en SystemResources.h) para que el WS lo alimente.
+ * - Por ahora el callback devuelve silencio (B.6–B.8). En B.9 leerá del ring.
+ */
 class AudioOutputA2DP {
 public:
+    static AudioOutputA2DP* instance;
+
     AudioOutputA2DP();
     ~AudioOutputA2DP();
 
-    /**
-     * @brief Inicializa el búfer y el servicio Bluetooth A2DP.
-     * @param device_name El nombre del altavoz Bluetooth al que se conectará.
-     * @param buffer_size El tamaño en bytes para el búfer de audio.
-     */
-    void begin(const char* device_name, size_t buffer_size = 8192);
+    // Inicia A2DP como SOURCE hacia el dispositivo BT (p.ej. "XH-A158")
+    void begin(const char* device_name, size_t buffer_size_bytes);
 
-    /**
-     * @brief Escribe datos de audio en el búfer para ser reproducidos.
-     * Esta función es segura para ser llamada desde diferentes hilos (thread-safe).
-     * @param data Puntero a los datos de audio PCM.
-     * @param length Longitud de los datos en bytes.
-     * @return El número de bytes que fueron escritos exitosamente en el búfer.
-     */
-    size_t write(const uint8_t* data, size_t length);
+    // Detiene A2DP y libera el ring
+    void end();
 
-    /**
-     * @brief Verifica si el altavoz Bluetooth está conectado.
-     * @return true si está conectado, false en caso contrario.
-     */
-    bool isConnected();
+    // Encola bytes PCM en el ring (no bloqueante). Retorna bytes aceptados o 0 si ring lleno.
+    size_t write(const uint8_t* data, size_t len);
+
+    // Callback que el stack A2DP llama para pedir más PCM
+    static int32_t audio_data_callback(uint8_t* data, int32_t len);
 
 private:
     BluetoothA2DPSource a2dp_source;
-    RingbufHandle_t audio_buffer; // El "handle" para nuestro búfer de audio
-
-    // Función de callback estática que se pasa a la librería A2DP
-    static int32_t audio_data_callback(uint8_t* data, int32_t len);
-
-    // Puntero estático a la instancia actual para poder usarlo en el callback
-    static AudioOutputA2DP* instance;
+    RingbufHandle_t     audio_buffer;   // ring local de salida BT
 };
-
-#endif // AUDIO_OUTPUT_A2DP_H

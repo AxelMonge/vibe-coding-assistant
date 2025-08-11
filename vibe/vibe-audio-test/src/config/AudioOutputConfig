@@ -1,18 +1,34 @@
-#ifndef AUDIO_OUTPUT_CONFIG_H
-#define AUDIO_OUTPUT_CONFIG_H
+#pragma once
 
-// Nombre del dispositivo Bluetooth (altavoz) al que nos conectaremos.
-// Debe coincidir exactamente con el nombre que anuncia el altavoz XH-A158.
-#define BT_SPEAKER_NAME "XH-A158"
+// -----------------------------------------------------------------------------
+// AudioOutputConfig.h — Configuración de salida de audio (A2DP)
+// -----------------------------------------------------------------------------
 
-// Tamaño del búfer de anillo de FreeRTOS en bytes. 16KB proporciona un buen
-// equilibrio entre la absorción de jitter de red y la latencia.
-#define AUDIO_BUFFER_SIZE (16 * 1024)
+// Nombre EXACTO del dispositivo Bluetooth (ajústalo si el tuyo anuncia otro)
+#ifndef BT_SPEAKER_NAME
+#define BT_SPEAKER_NAME "HCW Music"
+#endif
 
-// Parámetros del formato de audio. Deben coincidir con la salida del servidor.
-// La biblioteca A2DP normalmente negocia 44.1kHz, pero es bueno tenerlos definidos.
-#define AUDIO_SAMPLE_RATE 44100
-#define AUDIO_CHANNELS 2
-#define AUDIO_BITS_PER_SAMPLE 16
+// Tamaño del ring buffer (bytes) para la salida PCM hacia A2DP.
+// Subido para mayor tolerancia a jitter WiFi (antes 32768).
+#ifndef AUDIO_BUFFER_SIZE
+#define AUDIO_BUFFER_SIZE 16384
+#endif
 
-#endif // AUDIO_OUTPUT_CONFIG_H
+// Formato PCM esperado desde el servidor (test_speaker.py)
+#ifndef PCM_SAMPLE_RATE
+#define PCM_SAMPLE_RATE 44100   // Hz
+#endif
+
+#ifndef PCM_CHANNELS
+#define PCM_CHANNELS 2          // estéreo
+#endif
+
+#ifndef PCM_SAMPLE_WIDTH_BYTES
+#define PCM_SAMPLE_WIDTH_BYTES 2 // s16le
+#endif
+
+// Volumen A2DP por defecto (0..127)
+#ifndef A2DP_DEFAULT_VOLUME
+#define A2DP_DEFAULT_VOLUME 80
+#endif

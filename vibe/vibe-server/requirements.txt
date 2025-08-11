@@ -21,4 +21,5 @@ webrtcvad-wheels # Para Detección de Actividad de Voz (VAD)
 # --- Utilidades ---
 python-dotenv
 
-pydub       
+pydub>=0.25.1
+imageio-ffmpeg>=0.5.1    
